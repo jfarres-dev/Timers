@@ -311,15 +311,11 @@ body {
   border-color: var(--accent);
 }
 
-/* ─── Tag mini chips (inline in timer row) ───────────────────────────────── */
+/* ─── Tag mini chips (second row, below timer) ───────────────────────────── */
 .card-tags-inline {
   display: flex;
-  gap: 3px;
-  flex: 1;           /* pushes controls to the right */
-  flex-wrap: nowrap;
-  overflow: hidden;
-  align-items: center;
-  min-width: 0;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 
 .tag-mini {
@@ -402,6 +398,7 @@ body {
   gap: 4px;
   flex-shrink: 0;
   align-items: center;
+  margin-left: auto;
 }
 
 .btn-timer {

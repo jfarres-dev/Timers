@@ -170,10 +170,6 @@ function stopTimer(cardId) {
   const found = findCard(cardId);
   const delta = (Date.now() - startedAt[cardId]) / 1000;
   if (found) found.card.elapsed += delta;
-  // log to daily summary
-  const key = todayKey();
-  state.dailyLog = state.dailyLog || {};
-  state.dailyLog[key] = (state.dailyLog[key] || 0) + delta;
   delete startedAt[cardId];
   save();
   render();
@@ -437,7 +433,6 @@ function renderCard(card, colId) {
      data-card-id="${card.id}" data-col-id="${colId}">
   <div class="timer-row">
     <span class="timer-display" data-card-timer="${card.id}">${fmt(elapsed)}</span>
-    <div class="card-tags-inline">${activeTags}</div>
     <div class="timer-controls">
       ${running
         ? `<button class="btn-timer btn-stop"  data-action="stop"  data-card-id="${card.id}">⏹</button>`
@@ -452,6 +447,7 @@ function renderCard(card, colId) {
               title="Eliminar">✕</button>
     </div>
   </div>
+  ${activeTags ? `<div class="card-tags-inline">${activeTags}</div>` : ''}
   ${!collapsed ? `
   <input class="card-title-input"
          data-input="card-title" data-card-id="${card.id}"
