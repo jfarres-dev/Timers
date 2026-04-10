@@ -1,9 +1,25 @@
 'use strict';
 
+// ─── Tag config ───────────────────────────────────────────────────────────────
+
+const TAGS = [
+  { id: 'bug',     label: '#bug' },
+  { id: 'feature', label: '#feature' },
+  { id: 'meeting', label: '#meeting' },
+  { id: 'review',  label: '#review' },
+  { id: 'test',    label: '#test' },
+  { id: 'fix',     label: '#fix' },
+];
+
 // ─── State ────────────────────────────────────────────────────────────────────
 
 let state = { columns: [] };
-const startedAt = {}; // cardId → timestamp (ms) when timer was started
+const startedAt = {}; // cardId → timestamp (ms)
+
+// UI-only (not persisted)
+let filterSearch       = '';
+let filterTag          = '';
+let archiveSectionOpen = false;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -83,16 +99,17 @@ function load() {
     const raw = localStorage.getItem('timerboard');
     if (!raw) throw new Error('empty');
     state = JSON.parse(raw);
-    // Re-attach running timers (resume from last save)
-    state.columns.forEach(col =>
+    state.columns.forEach(col => {
+      if (col.archived == null) col.archived = false;
       col.cards.forEach(card => {
-        if (card.running) startedAt[card.id] = Date.now();
-        if (card.collapsed == null) card.collapsed = true; // default collapsed for old data
-      })
-    );
+        if (card.running)   startedAt[card.id] = Date.now();
+        if (card.collapsed == null) card.collapsed = true;
+        if (!Array.isArray(card.tags)) card.tags = [];
+      });
+    });
   } catch {
     state = {
-      columns: [{ id: uid(), title: 'Mi Proyecto', cards: [] }],
+      columns: [{ id: uid(), title: 'Mi Proyecto', archived: false, cards: [] }],
     };
   }
 }
@@ -151,7 +168,12 @@ function startTimer(cardId) {
 function stopTimer(cardId) {
   if (!startedAt[cardId]) return;
   const found = findCard(cardId);
-  if (found) found.card.elapsed += (Date.now() - startedAt[cardId]) / 1000;
+  const delta = (Date.now() - startedAt[cardId]) / 1000;
+  if (found) found.card.elapsed += delta;
+  // log to daily summary
+  const key = todayKey();
+  state.dailyLog = state.dailyLog || {};
+  state.dailyLog[key] = (state.dailyLog[key] || 0) + delta;
   delete startedAt[cardId];
   save();
   render();
@@ -169,7 +191,7 @@ function resetTimer(cardId) {
 // ─── Board mutations ──────────────────────────────────────────────────────────
 
 function addColumn() {
-  const col = { id: uid(), title: 'Nueva Columna', cards: [] };
+  const col = { id: uid(), title: 'Nueva Columna', archived: false, cards: [] };
   state.columns.push(col);
   save();
   render();
@@ -177,8 +199,26 @@ function addColumn() {
   inputs[inputs.length - 1]?.select();
 }
 
+function archiveColumn(colId) {
+  const col = state.columns.find(c => c.id === colId);
+  if (col) {
+    // stop all running timers in this column before archiving
+    col.cards.forEach(c => { if (startedAt[c.id]) stopTimer(c.id); });
+    col.archived = true;
+  }
+  save();
+  render();
+}
+
+function restoreColumn(colId) {
+  const col = state.columns.find(c => c.id === colId);
+  if (col) col.archived = false;
+  save();
+  render();
+}
+
 function deleteColumn(colId) {
-  if (!confirm('¿Eliminar esta columna y todos sus timers?')) return;
+  if (!confirm('¿Eliminar esta columna permanentemente?')) return;
   const col = state.columns.find(c => c.id === colId);
   if (col) col.cards.forEach(c => delete startedAt[c.id]);
   state.columns = state.columns.filter(c => c.id !== colId);
@@ -189,12 +229,17 @@ function deleteColumn(colId) {
 function addCard(colId) {
   const col = state.columns.find(c => c.id === colId);
   if (!col) return;
-  const card = { id: uid(), title: 'Nuevo Timer', elapsed: 0, running: false, notes: '', collapsed: true };
+  const card = {
+    id: uid(), title: '',
+    elapsed: 0, running: false,
+    notes: '', collapsed: false, tags: [],
+  };
   col.cards.push(card);
   save();
   render();
+  // Focus title in the expanded new card
   const inputs = document.querySelectorAll(`[data-col-id="${colId}"] .card-title-input`);
-  inputs[inputs.length - 1]?.select();
+  inputs[inputs.length - 1]?.focus();
 }
 
 function deleteCard(cardId) {
@@ -233,21 +278,63 @@ function toggleCardCollapse(cardId) {
   render();
 }
 
+function toggleTag(cardId, tag) {
+  const found = findCard(cardId);
+  if (!found) return;
+  const tags = found.card.tags || [];
+  const idx  = tags.indexOf(tag);
+  if (idx === -1) tags.push(tag);
+  else tags.splice(idx, 1);
+  found.card.tags = tags;
+  save();
+  render();
+}
+
+// ─── Filters ──────────────────────────────────────────────────────────────────
+
+function applyFilters() {
+  const q = filterSearch.toLowerCase().trim();
+  document.querySelectorAll('.card').forEach(el => {
+    const cardId   = el.dataset.cardId;
+    const found     = findCard(cardId);
+    const cardTitle = (found?.card?.title || '').toLowerCase();
+    const cardTags  = found?.card?.tags || [];
+
+    const matchSearch = !q || cardTitle.includes(q);
+    const matchTag    = !filterTag || cardTags.includes(filterTag);
+
+    el.classList.toggle('card-hidden', !(matchSearch && matchTag));
+  });
+
+  // Show a "no results" message in columns where all cards are hidden
+  document.querySelectorAll('.cards-container').forEach(container => {
+    const existing = container.querySelector('.no-results');
+    const cards    = [...container.querySelectorAll('.card')];
+    const allHidden = cards.length > 0 && cards.every(c => c.classList.contains('card-hidden'));
+    if (allHidden && !existing) {
+      const msg = document.createElement('p');
+      msg.className = 'no-results';
+      msg.textContent = 'Sin resultados';
+      container.appendChild(msg);
+    } else if (!allHidden && existing) {
+      existing.remove();
+    }
+  });
+}
+
 // ─── Drag & Drop ──────────────────────────────────────────────────────────────
 
-let drag = null; // { type: 'card'|'column', cardId?, srcColId?, colId? }
+let drag = null;
 
 function setupDragDrop(board) {
   board.addEventListener('dragstart', e => {
     const card = e.target.closest('.card');
     const col  = e.target.closest('.column');
-
     if (card) {
-      // Card drag takes priority over column drag
       drag = { type: 'card', cardId: card.dataset.cardId, srcColId: card.dataset.colId };
       card.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'move';
-      e.stopPropagation(); // prevent column dragstart from firing
+      e.stopPropagation();
     } else if (col) {
       drag = { type: 'column', colId: col.dataset.colId };
       col.classList.add('dragging');
@@ -265,13 +352,10 @@ function setupDragDrop(board) {
     if (!drag) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-
     document.querySelectorAll('.drag-over')
       .forEach(el => el.classList.remove('drag-over'));
-
     const overCard = e.target.closest('.card');
     const overCol  = e.target.closest('.column');
-
     if (drag.type === 'card') {
       if (overCard && overCard.dataset.cardId !== drag.cardId) {
         overCard.classList.add('drag-over');
@@ -288,21 +372,17 @@ function setupDragDrop(board) {
   board.addEventListener('drop', e => {
     if (!drag) return;
     e.preventDefault();
-
     const overCard = e.target.closest('.card');
     const overCol  = e.target.closest('.column');
 
     if (drag.type === 'card') {
-      // Remove card from its current column
       let movedCard = null;
       for (const col of state.columns) {
         const i = col.cards.findIndex(c => c.id === drag.cardId);
         if (i !== -1) { [movedCard] = col.cards.splice(i, 1); break; }
       }
       if (!movedCard) return;
-
       if (overCard && overCard.dataset.cardId !== drag.cardId) {
-        // Insert before the card we dropped onto
         const targetCol = state.columns.find(c => c.id === overCard.dataset.colId);
         if (targetCol) {
           const i = targetCol.cards.findIndex(c => c.id === overCard.dataset.cardId);
@@ -311,27 +391,22 @@ function setupDragDrop(board) {
           state.columns[0]?.cards.push(movedCard);
         }
       } else if (overCol) {
-        // Append to end of target column
         const targetCol = state.columns.find(c => c.id === overCol.dataset.colId);
         if (targetCol) targetCol.cards.push(movedCard);
         else state.columns.find(c => c.id === drag.srcColId)?.cards.push(movedCard);
       } else {
-        // Dropped outside any column — return to source
         state.columns.find(c => c.id === drag.srcColId)?.cards.push(movedCard);
       }
-
     } else if (drag.type === 'column') {
       if (overCol && overCol.dataset.colId !== drag.colId) {
         const srcI = state.columns.findIndex(c => c.id === drag.colId);
         const [movedCol] = state.columns.splice(srcI, 1);
         let dstI = state.columns.findIndex(c => c.id === overCol.dataset.colId);
-        // Insert before or after based on cursor horizontal position
         const rect = overCol.getBoundingClientRect();
         if (e.clientX > rect.left + rect.width / 2) dstI += 1;
         state.columns.splice(dstI, 0, movedCol);
       }
     }
-
     drag = null;
     save();
     render();
@@ -341,35 +416,48 @@ function setupDragDrop(board) {
 // ─── Templates ────────────────────────────────────────────────────────────────
 
 function renderCard(card, colId) {
-  const elapsed  = getElapsed(card);
-  const running  = !!startedAt[card.id];
-  const collapsed = card.collapsed !== false; // default true
+  const elapsed   = getElapsed(card);
+  const running   = !!startedAt[card.id];
+  const collapsed = card.collapsed !== false;
   const hasNotes  = (card.notes || '').trim().length > 0;
+  const tags      = card.tags || [];
+
+  const activeTags = tags.map(t =>
+    `<span class="tag-mini tag-${t}">${t}</span>`
+  ).join('');
+
+  const tagPicker = TAGS.map(t => {
+    const on = tags.includes(t.id);
+    return `<button class="tag-chip tag-${t.id}${on ? ' active' : ''}"
+              data-action="toggle-tag" data-tag="${t.id}" data-card-id="${card.id}">${t.label}</button>`;
+  }).join('');
+
   return `
 <div class="card${running ? ' running' : ''}" draggable="true"
      data-card-id="${card.id}" data-col-id="${colId}">
-  <div class="card-header">
-    <input class="card-title-input"
-           data-input="card-title" data-card-id="${card.id}"
-           value="${escAttr(card.title)}" />
-    <button class="btn-collapse${hasNotes && collapsed ? ' has-notes' : ''}"
-            data-action="toggle-collapse" data-card-id="${card.id}"
-            title="${collapsed ? 'Expandir notas' : 'Comprimir'}">${collapsed ? '▾' : '▴'}</button>
-    <button class="btn-icon"
-            data-action="delete-card" data-card-id="${card.id}"
-            title="Eliminar timer">✕</button>
-  </div>
   <div class="timer-row">
     <span class="timer-display" data-card-timer="${card.id}">${fmt(elapsed)}</span>
+    <div class="card-tags-inline">${activeTags}</div>
     <div class="timer-controls">
       ${running
         ? `<button class="btn-timer btn-stop"  data-action="stop"  data-card-id="${card.id}">⏹</button>`
         : `<button class="btn-timer btn-start" data-action="start" data-card-id="${card.id}">▶</button>`
       }
       <button class="btn-timer btn-reset" data-action="reset" data-card-id="${card.id}"${running ? ' disabled' : ''}>↺</button>
+      <button class="btn-timer btn-expand${hasNotes && collapsed ? ' has-notes' : ''}"
+              data-action="toggle-collapse" data-card-id="${card.id}"
+              title="${collapsed ? 'Expandir' : 'Comprimir'}">${collapsed ? '▾' : '▴'}</button>
+      <button class="btn-timer btn-del"
+              data-action="delete-card" data-card-id="${card.id}"
+              title="Eliminar">✕</button>
     </div>
   </div>
-  ${!collapsed ? `<textarea class="card-notes"
+  ${!collapsed ? `
+  <input class="card-title-input"
+         data-input="card-title" data-card-id="${card.id}"
+         value="${escAttr(card.title)}" placeholder="Nombre del timer…" />
+  <div class="card-tag-picker">${tagPicker}</div>
+  <textarea class="card-notes"
             data-input="notes" data-card-id="${card.id}"
             placeholder="Notas...">${escHtml(card.notes)}</textarea>` : ''}
 </div>`;
@@ -385,9 +473,9 @@ function renderColumn(col) {
            value="${escAttr(col.title)}" />
     <div class="col-meta">
       <span class="col-total" data-col-total="${col.id}">${fmt(total)}</span>
-      <button class="btn-icon"
-              data-action="delete-col" data-col-id="${col.id}"
-              title="Eliminar columna">✕</button>
+      <button class="btn-icon archive-btn"
+              data-action="archive-col" data-col-id="${col.id}"
+              title="Archivar columna">⊡</button>
     </div>
   </div>
   <div class="cards-container" data-col-id="${col.id}">
@@ -397,22 +485,48 @@ function renderColumn(col) {
 </div>`;
 }
 
+function renderArchivedSection() {
+  const archived = state.columns.filter(c => c.archived);
+  if (archived.length === 0) return '';
+
+  const items = archived.map(col => {
+    const total = colTotal(col);
+    return `
+<div class="archived-col-item">
+  <span class="archived-col-title" title="${escAttr(col.title)}">${escHtml(col.title)}</span>
+  <span class="archived-col-total">${fmt(total)}</span>
+  <button class="btn-restore" data-action="restore-col" data-col-id="${col.id}" title="Restaurar">↩</button>
+  <button class="btn-icon"    data-action="delete-col"  data-col-id="${col.id}" title="Eliminar">✕</button>
+</div>`;
+  }).join('');
+
+  return `
+<div class="archived-section">
+  <button class="btn-archived-toggle" data-action="toggle-archive-section">
+    📦 Archivadas (${archived.length}) ${archiveSectionOpen ? '▴' : '▾'}
+  </button>
+  ${archiveSectionOpen ? `<div class="archived-list">${items}</div>` : ''}
+</div>`;
+}
+
 // ─── Render ───────────────────────────────────────────────────────────────────
 
 function render() {
-  // Preserve focus so typing in inputs/textareas doesn't lose cursor position
-  const active     = document.activeElement;
-  const activeInput   = active?.dataset?.input;
-  const activeCardId  = active?.dataset?.cardId;
-  const activeColId   = active?.dataset?.colId;
-  const selStart   = active?.selectionStart;
-  const selEnd     = active?.selectionEnd;
-  const scrollTop  = active?.scrollTop;
+  const active       = document.activeElement;
+  const activeInput  = active?.dataset?.input;
+  const activeCardId = active?.dataset?.cardId;
+  const activeColId  = active?.dataset?.colId;
+  const selStart     = active?.selectionStart;
+  const selEnd       = active?.selectionEnd;
+  const scrollTop    = active?.scrollTop;
 
   const board = document.getElementById('board');
+  const active_cols = state.columns.filter(c => !c.archived);
+
   board.innerHTML =
-    state.columns.map(renderColumn).join('') +
-    `<div class="add-col-btn"><button data-action="add-column">+ Añadir Columna</button></div>`;
+    active_cols.map(renderColumn).join('') +
+    `<div class="add-col-btn"><button data-action="add-column">+ Añadir Columna</button></div>` +
+    renderArchivedSection();
 
   // Restore focus
   if (activeInput) {
@@ -425,14 +539,14 @@ function render() {
     if (el) {
       el.focus();
       if (selStart !== undefined) {
-        try { el.setSelectionRange(selStart, selEnd); } catch { /* input type may not support it */ }
+        try { el.setSelectionRange(selStart, selEnd); } catch { /* noop */ }
       }
       if (scrollTop !== undefined) el.scrollTop = scrollTop;
     }
   }
 
-  // Auto-height all textareas
   board.querySelectorAll('textarea').forEach(autoHeight);
+  applyFilters();
 }
 
 function autoHeight(el) {
@@ -449,26 +563,80 @@ function init() {
   document.getElementById('theme-toggle')
     .addEventListener('click', toggleTheme);
 
-  const board = document.getElementById('board');
+  // ── Search ────────────────────────────────────────────────
+  const searchInput = document.getElementById('search-input');
+  const searchClear = document.getElementById('search-clear');
 
-  // Click delegation
-  board.addEventListener('click', e => {
-    const btn = e.target.closest('[data-action]');
-    if (!btn) return;
-    const { action, colId, cardId } = btn.dataset;
-    switch (action) {
-      case 'add-column':  addColumn();          break;
-      case 'delete-col':  deleteColumn(colId);  break;
-      case 'add-card':    addCard(colId);        break;
-      case 'delete-card':      deleteCard(cardId);          break;
-      case 'start':            startTimer(cardId);          break;
-      case 'stop':             stopTimer(cardId);           break;
-      case 'reset':            resetTimer(cardId);          break;
-      case 'toggle-collapse':  toggleCardCollapse(cardId);  break;
+  searchInput.addEventListener('input', () => {
+    filterSearch = searchInput.value;
+    searchClear.hidden = !filterSearch;
+    applyFilters();
+  });
+
+  searchClear.addEventListener('click', () => {
+    filterSearch = '';
+    searchInput.value = '';
+    searchClear.hidden = true;
+    searchInput.focus();
+    applyFilters();
+  });
+
+  // Ctrl+F focuses search
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      const active = document.activeElement;
+      const inInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+      if (!inInput) {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+      }
+    }
+    if (e.key === 'Escape' && document.activeElement === searchInput) {
+      filterSearch = '';
+      searchInput.value = '';
+      searchClear.hidden = true;
+      searchInput.blur();
+      applyFilters();
     }
   });
 
-  // Input delegation — update state without re-rendering
+  // ── Tag filters ───────────────────────────────────────────
+  document.getElementById('tag-filters').addEventListener('click', e => {
+    const btn = e.target.closest('.tag-filter-btn');
+    if (!btn) return;
+    filterTag = btn.dataset.filterTag;
+    document.querySelectorAll('.tag-filter-btn')
+      .forEach(b => b.classList.toggle('active', b.dataset.filterTag === filterTag));
+    applyFilters();
+  });
+
+  // ── Board events ──────────────────────────────────────────
+  const board = document.getElementById('board');
+
+  board.addEventListener('click', e => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const { action, colId, cardId, tag } = btn.dataset;
+    switch (action) {
+      case 'add-column':           addColumn();                    break;
+      case 'archive-col':          archiveColumn(colId);           break;
+      case 'restore-col':          restoreColumn(colId);           break;
+      case 'delete-col':           deleteColumn(colId);            break;
+      case 'toggle-archive-section':
+        archiveSectionOpen = !archiveSectionOpen;
+        render();
+        break;
+      case 'add-card':             addCard(colId);                 break;
+      case 'delete-card':          deleteCard(cardId);             break;
+      case 'start':                startTimer(cardId);             break;
+      case 'stop':                 stopTimer(cardId);              break;
+      case 'reset':                resetTimer(cardId);             break;
+      case 'toggle-collapse':      toggleCardCollapse(cardId);     break;
+      case 'toggle-tag':           toggleTag(cardId, tag);         break;
+    }
+  });
+
   board.addEventListener('input', e => {
     const { input, colId, cardId } = e.target.dataset;
     if (input === 'col-title')  updateColTitle(colId, e.target.value);
@@ -477,14 +645,12 @@ function init() {
     if (e.target.tagName === 'TEXTAREA') autoHeight(e.target);
   });
 
-  // Select all text when focusing title inputs (easier to rename)
   board.addEventListener('focus', e => {
     if (e.target.matches('.col-title-input, .card-title-input')) {
       e.target.select();
     }
   }, true);
 
-  // Persist on page close/refresh
   window.addEventListener('beforeunload', save);
 
   setupDragDrop(board);

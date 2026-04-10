@@ -9,10 +9,30 @@
 </head>
 <body>
   <header class="app-header">
-    <h1>⏱ Timer Board</h1>
-    <span class="header-hint">Arrastra columnas y tarjetas para reorganizar</span>
-    <button id="theme-toggle" class="btn-theme-toggle" title="Cambiar tema">☀</button>
+    <div class="header-top">
+      <h1>⏱ Timer Board</h1>
+      <div class="header-actions">
+        <button id="theme-toggle" class="btn-theme-toggle" title="Cambiar tema">☀</button>
+      </div>
+    </div>
+    <div class="header-bottom">
+      <div class="search-wrap">
+        <span class="search-icon">⌕</span>
+        <input id="search-input" type="text" placeholder="Buscar tarjeta… (Ctrl+F)" autocomplete="off" />
+        <button id="search-clear" class="btn-search-clear" hidden>✕</button>
+      </div>
+      <div id="tag-filters" class="tag-filters">
+        <button class="tag-filter-btn active" data-filter-tag="">Todas</button>
+        <button class="tag-filter-btn" data-filter-tag="bug"    >#bug</button>
+        <button class="tag-filter-btn" data-filter-tag="feature">#feature</button>
+        <button class="tag-filter-btn" data-filter-tag="meeting">#meeting</button>
+        <button class="tag-filter-btn" data-filter-tag="review" >#review</button>
+        <button class="tag-filter-btn" data-filter-tag="test"   >#test</button>
+        <button class="tag-filter-btn" data-filter-tag="fix"    >#fix</button>
+      </div>
+    </div>
   </header>
+
   <main>
     <div id="board" class="board"></div>
   </main>
