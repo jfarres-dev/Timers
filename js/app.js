@@ -17,8 +17,7 @@ let state = { columns: [] };
 const startedAt = {}; // cardId → timestamp (ms)
 
 // UI-only (not persisted)
-let filterSearch       = '';
-let filterTag          = '';
+let filterTag = '';
 let archiveSectionOpen = false;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -228,14 +227,11 @@ function addCard(colId) {
   const card = {
     id: uid(), title: '',
     elapsed: 0, running: false,
-    notes: '', collapsed: false, tags: [],
+    notes: '', tags: [],
   };
   col.cards.push(card);
   save();
   render();
-  // Focus title in the expanded new card
-  const inputs = document.querySelectorAll(`[data-col-id="${colId}"] .card-title-input`);
-  inputs[inputs.length - 1]?.focus();
 }
 
 function deleteCard(cardId) {
@@ -266,6 +262,38 @@ function updateNotes(cardId, val) {
   save();
 }
 
+let modalTags = []; // buffer de tags mientras el modal está abierto
+
+function openCardModal(cardId) {
+  const found = findCard(cardId);
+  if (!found) return;
+  const card  = found.card;
+  const modal = document.getElementById('card-modal');
+  modalTags = [...(card.tags || [])];
+  modal.dataset.cardId = cardId;
+  modal.querySelector('.modal-title-input').value = card.title;
+  modal.querySelector('.modal-notes').value = card.notes || '';
+  renderModalTags(modal);
+  modal.classList.add('open');
+  const titleInput = modal.querySelector('.modal-title-input');
+  titleInput.focus();
+  titleInput.select();
+}
+
+function renderModalTags(modal) {
+  modal.querySelector('.modal-tag-picker').innerHTML = TAGS.map(t => {
+    const on = modalTags.includes(t.id);
+    return `<button class="tag-chip tag-${t.id}${on ? ' active' : ''}"
+              data-action="modal-toggle-tag" data-tag="${t.id}">${t.label}</button>`;
+  }).join('');
+}
+
+function closeCardModal() {
+  const modal = document.getElementById('card-modal');
+  modal.classList.remove('open');
+  modal.dataset.cardId = '';
+}
+
 function toggleCardCollapse(cardId) {
   const found = findCard(cardId);
   if (!found) return;
@@ -289,17 +317,11 @@ function toggleTag(cardId, tag) {
 // ─── Filters ──────────────────────────────────────────────────────────────────
 
 function applyFilters() {
-  const q = filterSearch.toLowerCase().trim();
   document.querySelectorAll('.card').forEach(el => {
-    const cardId   = el.dataset.cardId;
-    const found     = findCard(cardId);
-    const cardTitle = (found?.card?.title || '').toLowerCase();
-    const cardTags  = found?.card?.tags || [];
-
-    const matchSearch = !q || cardTitle.includes(q);
-    const matchTag    = !filterTag || cardTags.includes(filterTag);
-
-    el.classList.toggle('card-hidden', !(matchSearch && matchTag));
+    const found    = findCard(el.dataset.cardId);
+    const cardTags = found?.card?.tags || [];
+    const matchTag = !filterTag || cardTags.includes(filterTag);
+    el.classList.toggle('card-hidden', !matchTag);
   });
 
   // Show a "no results" message in columns where all cards are hidden
@@ -412,21 +434,14 @@ function setupDragDrop(board) {
 // ─── Templates ────────────────────────────────────────────────────────────────
 
 function renderCard(card, colId) {
-  const elapsed   = getElapsed(card);
-  const running   = !!startedAt[card.id];
-  const collapsed = card.collapsed !== false;
-  const hasNotes  = (card.notes || '').trim().length > 0;
-  const tags      = card.tags || [];
+  const elapsed    = getElapsed(card);
+  const running    = !!startedAt[card.id];
+  const tags       = card.tags || [];
+  const hasTitle   = (card.title || '').trim().length > 0;
 
   const activeTags = tags.map(t =>
     `<span class="tag-mini tag-${t}">${t}</span>`
   ).join('');
-
-  const tagPicker = TAGS.map(t => {
-    const on = tags.includes(t.id);
-    return `<button class="tag-chip tag-${t.id}${on ? ' active' : ''}"
-              data-action="toggle-tag" data-tag="${t.id}" data-card-id="${card.id}">${t.label}</button>`;
-  }).join('');
 
   return `
 <div class="card${running ? ' running' : ''}" draggable="true"
@@ -439,23 +454,10 @@ function renderCard(card, colId) {
         : `<button class="btn-timer btn-start" data-action="start" data-card-id="${card.id}">▶</button>`
       }
       <button class="btn-timer btn-reset" data-action="reset" data-card-id="${card.id}"${running ? ' disabled' : ''}>↺</button>
-      <button class="btn-timer btn-expand${hasNotes && collapsed ? ' has-notes' : ''}"
-              data-action="toggle-collapse" data-card-id="${card.id}"
-              title="${collapsed ? 'Expandir' : 'Comprimir'}">${collapsed ? '▾' : '▴'}</button>
-      <button class="btn-timer btn-del"
-              data-action="delete-card" data-card-id="${card.id}"
-              title="Eliminar">✕</button>
     </div>
   </div>
+  ${hasTitle ? `<div class="card-title-label">${escHtml(card.title)}</div>` : ''}
   ${activeTags ? `<div class="card-tags-inline">${activeTags}</div>` : ''}
-  ${!collapsed ? `
-  <input class="card-title-input"
-         data-input="card-title" data-card-id="${card.id}"
-         value="${escAttr(card.title)}" placeholder="Nombre del timer…" />
-  <div class="card-tag-picker">${tagPicker}</div>
-  <textarea class="card-notes"
-            data-input="notes" data-card-id="${card.id}"
-            placeholder="Notas...">${escHtml(card.notes)}</textarea>` : ''}
 </div>`;
 }
 
@@ -471,7 +473,13 @@ function renderColumn(col) {
       <span class="col-total" data-col-total="${col.id}">${fmt(total)}</span>
       <button class="btn-icon archive-btn"
               data-action="archive-col" data-col-id="${col.id}"
-              title="Archivar columna">⊡</button>
+              title="Archivar columna">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="1" y="1" width="14" height="4" rx="1"/>
+          <path d="M2 5v8a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V5"/>
+          <path d="M6 9h4"/>
+        </svg>
+      </button>
     </div>
   </div>
   <div class="cards-container" data-col-id="${col.id}">
@@ -559,44 +567,6 @@ function init() {
   document.getElementById('theme-toggle')
     .addEventListener('click', toggleTheme);
 
-  // ── Search ────────────────────────────────────────────────
-  const searchInput = document.getElementById('search-input');
-  const searchClear = document.getElementById('search-clear');
-
-  searchInput.addEventListener('input', () => {
-    filterSearch = searchInput.value;
-    searchClear.hidden = !filterSearch;
-    applyFilters();
-  });
-
-  searchClear.addEventListener('click', () => {
-    filterSearch = '';
-    searchInput.value = '';
-    searchClear.hidden = true;
-    searchInput.focus();
-    applyFilters();
-  });
-
-  // Ctrl+F focuses search
-  document.addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-      const active = document.activeElement;
-      const inInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
-      if (!inInput) {
-        e.preventDefault();
-        searchInput.focus();
-        searchInput.select();
-      }
-    }
-    if (e.key === 'Escape' && document.activeElement === searchInput) {
-      filterSearch = '';
-      searchInput.value = '';
-      searchClear.hidden = true;
-      searchInput.blur();
-      applyFilters();
-    }
-  });
-
   // ── Tag filters ───────────────────────────────────────────
   document.getElementById('tag-filters').addEventListener('click', e => {
     const btn = e.target.closest('.tag-filter-btn');
@@ -611,7 +581,13 @@ function init() {
   const board = document.getElementById('board');
 
   board.addEventListener('click', e => {
-    const btn = e.target.closest('[data-action]');
+    const btn  = e.target.closest('[data-action]');
+    const card = e.target.closest('.card');
+    // Click en la tarjeta (fuera de botones de acción) → abrir modal
+    if (card && !btn) {
+      openCardModal(card.dataset.cardId);
+      return;
+    }
     if (!btn) return;
     const { action, colId, cardId, tag } = btn.dataset;
     switch (action) {
@@ -624,28 +600,64 @@ function init() {
         render();
         break;
       case 'add-card':             addCard(colId);                 break;
-      case 'delete-card':          deleteCard(cardId);             break;
       case 'start':                startTimer(cardId);             break;
       case 'stop':                 stopTimer(cardId);              break;
       case 'reset':                resetTimer(cardId);             break;
-      case 'toggle-collapse':      toggleCardCollapse(cardId);     break;
-      case 'toggle-tag':           toggleTag(cardId, tag);         break;
     }
   });
 
   board.addEventListener('input', e => {
-    const { input, colId, cardId } = e.target.dataset;
-    if (input === 'col-title')  updateColTitle(colId, e.target.value);
-    if (input === 'card-title') updateCardTitle(cardId, e.target.value);
-    if (input === 'notes')      updateNotes(cardId, e.target.value);
-    if (e.target.tagName === 'TEXTAREA') autoHeight(e.target);
+    const { input, colId } = e.target.dataset;
+    if (input === 'col-title') updateColTitle(colId, e.target.value);
   });
 
   board.addEventListener('focus', e => {
-    if (e.target.matches('.col-title-input, .card-title-input')) {
+    if (e.target.matches('.col-title-input')) {
       e.target.select();
     }
   }, true);
+
+  // ── Modal events ──────────────────────────────────────────
+  const modal = document.getElementById('card-modal');
+
+  modal.addEventListener('click', e => {
+    if (e.target === modal) closeCardModal();
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeCardModal();
+  });
+
+  modal.querySelector('.modal-close').addEventListener('click', closeCardModal);
+
+  modal.querySelector('.modal-btn-save').addEventListener('click', () => {
+    const cardId = modal.dataset.cardId;
+    if (!cardId) return;
+    updateCardTitle(cardId, modal.querySelector('.modal-title-input').value);
+    updateNotes(cardId, modal.querySelector('.modal-notes').value);
+    const found = findCard(cardId);
+    if (found) { found.card.tags = [...modalTags]; save(); render(); }
+    closeCardModal();
+  });
+
+  modal.addEventListener('click', e => {
+    const btn = e.target.closest('[data-action="modal-toggle-tag"]');
+    if (!btn) return;
+    const tag = btn.dataset.tag;
+    const idx = modalTags.indexOf(tag);
+    if (idx === -1) modalTags.push(tag);
+    else modalTags.splice(idx, 1);
+    btn.classList.toggle('active', modalTags.includes(tag));
+  });
+
+  modal.querySelector('.modal-btn-delete').addEventListener('click', () => {
+    const cardId = modal.dataset.cardId;
+    if (!cardId) return;
+    if (!confirm('¿Eliminar este timer?')) return;
+    closeCardModal();
+    deleteCard(cardId);
+  });
+
 
   window.addEventListener('beforeunload', save);
 
