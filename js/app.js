@@ -13,12 +13,17 @@ const TAGS = [
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
-let state = { columns: [] };
-const startedAt = {}; // cardId → timestamp (ms)
+let boards = [];        // [{ id, title, columns[] }]
+let activeBoardId = ''; // id of the currently visible board
+const startedAt = {};   // cardId → timestamp (ms)
 
 // UI-only (not persisted)
 let filterTag = '';
 let archiveSectionOpen = false;
+
+function activeBoard() {
+  return boards.find(b => b.id === activeBoardId) ?? boards[0];
+}
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -41,6 +46,10 @@ function getElapsed(card) {
 
 function colTotal(col) {
   return col.cards.reduce((sum, c) => sum + getElapsed(c), 0);
+}
+
+function boardTotal(board) {
+  return board.columns.reduce((sum, col) => sum + colTotal(col), 0);
 }
 
 function escHtml(s) {
@@ -81,35 +90,64 @@ function syncThemeBtn(theme) {
 
 function save() {
   const snap = {
-    columns: state.columns.map(col => ({
-      ...col,
-      cards: col.cards.map(card => ({
-        ...card,
-        elapsed: getElapsed(card),
-        running: !!startedAt[card.id],
+    boards: boards.map(board => ({
+      ...board,
+      columns: board.columns.map(col => ({
+        ...col,
+        cards: col.cards.map(card => ({
+          ...card,
+          elapsed: getElapsed(card),
+          running: !!startedAt[card.id],
+        })),
       })),
     })),
+    activeBoardId,
   };
   localStorage.setItem('timerboard', JSON.stringify(snap));
+}
+
+function normalizeBoard(board) {
+  if (!Array.isArray(board.columns)) board.columns = [];
+  board.columns.forEach(col => {
+    if (col.archived == null) col.archived = false;
+    col.cards.forEach(card => {
+      if (card.running)              startedAt[card.id] = Date.now();
+      if (card.collapsed == null)    card.collapsed = true;
+      if (!Array.isArray(card.tags)) card.tags = [];
+    });
+  });
 }
 
 function load() {
   try {
     const raw = localStorage.getItem('timerboard');
     if (!raw) throw new Error('empty');
-    state = JSON.parse(raw);
-    state.columns.forEach(col => {
-      if (col.archived == null) col.archived = false;
-      col.cards.forEach(card => {
-        if (card.running)   startedAt[card.id] = Date.now();
-        if (card.collapsed == null) card.collapsed = true;
-        if (!Array.isArray(card.tags)) card.tags = [];
-      });
-    });
+    const data = JSON.parse(raw);
+
+    // Migration: old format had { columns: [...] } without boards array
+    if (data.columns && !data.boards) {
+      const boardId = uid();
+      boards = [{ id: boardId, title: 'Mi Tablón', columns: data.columns }];
+      activeBoardId = boardId;
+    } else {
+      boards        = data.boards ?? [];
+      activeBoardId = data.activeBoardId ?? boards[0]?.id ?? '';
+    }
+
+    boards.forEach(normalizeBoard);
+
+    // Ensure activeBoardId is valid
+    if (!boards.find(b => b.id === activeBoardId)) {
+      activeBoardId = boards[0]?.id ?? '';
+    }
   } catch {
-    state = {
+    const boardId = uid();
+    boards = [{
+      id: boardId,
+      title: 'Mi Tablón',
       columns: [{ id: uid(), title: 'Mi Proyecto', archived: false, cards: [] }],
-    };
+    }];
+    activeBoardId = boardId;
   }
 }
 
@@ -128,7 +166,8 @@ function tick() {
     tickId = null;
     return;
   }
-  for (const col of state.columns) {
+  // Update active board's card timers and column totals in the DOM
+  for (const col of activeBoard().columns) {
     let total = 0;
     for (const card of col.cards) {
       const elapsed = getElapsed(card);
@@ -141,15 +180,23 @@ function tick() {
     const el = document.querySelector(`[data-col-total="${col.id}"]`);
     if (el) el.textContent = fmt(total);
   }
+  // Update sidebar board total badges for all boards
+  for (const board of boards) {
+    const total = boardTotal(board);
+    const el = document.querySelector(`[data-board-total="${board.id}"]`);
+    if (el) el.textContent = fmt(total);
+  }
   save();
 }
 
 // ─── Find helpers ─────────────────────────────────────────────────────────────
 
 function findCard(cardId) {
-  for (const col of state.columns) {
-    const card = col.cards.find(c => c.id === cardId);
-    if (card) return { col, card };
+  for (const board of boards) {
+    for (const col of board.columns) {
+      const card = col.cards.find(c => c.id === cardId);
+      if (card) return { col, card };
+    }
   }
   return null;
 }
@@ -185,9 +232,62 @@ function resetTimer(cardId) {
 
 // ─── Board mutations ──────────────────────────────────────────────────────────
 
+function addBoard() {
+  const board = {
+    id: uid(),
+    title: 'Nuevo Tablón',
+    columns: [{ id: uid(), title: 'Nueva Columna', archived: false, cards: [] }],
+  };
+  boards.push(board);
+  activeBoardId = board.id;
+  archiveSectionOpen = false;
+  save();
+  renderSidebar();
+  render();
+  const input = document.querySelector(`[data-input="board-title"][data-board-id="${board.id}"]`);
+  if (input) { input.focus(); input.select(); }
+}
+
+function deleteBoard(boardId) {
+  if (boards.length <= 1) return;
+  if (!confirm('¿Eliminar este tablón y todos sus datos?')) return;
+  const board = boards.find(b => b.id === boardId);
+  if (board) {
+    for (const col of board.columns) {
+      for (const card of col.cards) delete startedAt[card.id];
+    }
+  }
+  boards = boards.filter(b => b.id !== boardId);
+  if (activeBoardId === boardId) {
+    activeBoardId = boards[0].id;
+    archiveSectionOpen = false;
+  }
+  save();
+  renderSidebar();
+  render();
+}
+
+function switchBoard(boardId) {
+  if (activeBoardId === boardId) return;
+  activeBoardId = boardId;
+  archiveSectionOpen = false;
+  filterTag = '';
+  document.querySelectorAll('.tag-filter-btn')
+    .forEach(b => b.classList.toggle('active', b.dataset.filterTag === ''));
+  save();
+  renderSidebar();
+  render();
+}
+
+function updateBoardTitle(boardId, val) {
+  const board = boards.find(b => b.id === boardId);
+  if (board) board.title = val;
+  save();
+}
+
 function addColumn() {
   const col = { id: uid(), title: 'Nueva Columna', archived: false, cards: [] };
-  state.columns.push(col);
+  activeBoard().columns.push(col);
   save();
   render();
   const inputs = document.querySelectorAll('.col-title-input');
@@ -195,9 +295,8 @@ function addColumn() {
 }
 
 function archiveColumn(colId) {
-  const col = state.columns.find(c => c.id === colId);
+  const col = activeBoard().columns.find(c => c.id === colId);
   if (col) {
-    // stop all running timers in this column before archiving
     col.cards.forEach(c => { if (startedAt[c.id]) stopTimer(c.id); });
     col.archived = true;
   }
@@ -206,7 +305,7 @@ function archiveColumn(colId) {
 }
 
 function restoreColumn(colId) {
-  const col = state.columns.find(c => c.id === colId);
+  const col = activeBoard().columns.find(c => c.id === colId);
   if (col) col.archived = false;
   save();
   render();
@@ -214,15 +313,15 @@ function restoreColumn(colId) {
 
 function deleteColumn(colId) {
   if (!confirm('¿Eliminar esta columna permanentemente?')) return;
-  const col = state.columns.find(c => c.id === colId);
+  const col = activeBoard().columns.find(c => c.id === colId);
   if (col) col.cards.forEach(c => delete startedAt[c.id]);
-  state.columns = state.columns.filter(c => c.id !== colId);
+  activeBoard().columns = activeBoard().columns.filter(c => c.id !== colId);
   save();
   render();
 }
 
 function addCard(colId) {
-  const col = state.columns.find(c => c.id === colId);
+  const col = activeBoard().columns.find(c => c.id === colId);
   if (!col) return;
   const card = {
     id: uid(), title: '',
@@ -236,7 +335,7 @@ function addCard(colId) {
 
 function deleteCard(cardId) {
   delete startedAt[cardId];
-  for (const col of state.columns) {
+  for (const col of activeBoard().columns) {
     const i = col.cards.findIndex(c => c.id === cardId);
     if (i !== -1) { col.cards.splice(i, 1); break; }
   }
@@ -245,7 +344,7 @@ function deleteCard(cardId) {
 }
 
 function updateColTitle(colId, val) {
-  const col = state.columns.find(c => c.id === colId);
+  const col = activeBoard().columns.find(c => c.id === colId);
   if (col) col.title = val;
   save();
 }
@@ -262,7 +361,7 @@ function updateNotes(cardId, val) {
   save();
 }
 
-let modalTags = []; // buffer de tags mientras el modal está abierto
+let modalTags = [];
 
 function openCardModal(cardId) {
   const found = findCard(cardId);
@@ -324,10 +423,9 @@ function applyFilters() {
     el.classList.toggle('card-hidden', !matchTag);
   });
 
-  // Show a "no results" message in columns where all cards are hidden
   document.querySelectorAll('.cards-container').forEach(container => {
-    const existing = container.querySelector('.no-results');
-    const cards    = [...container.querySelectorAll('.card')];
+    const existing  = container.querySelector('.no-results');
+    const cards     = [...container.querySelectorAll('.card')];
     const allHidden = cards.length > 0 && cards.every(c => c.classList.contains('card-hidden'));
     if (allHidden && !existing) {
       const msg = document.createElement('p');
@@ -392,37 +490,38 @@ function setupDragDrop(board) {
     e.preventDefault();
     const overCard = e.target.closest('.card');
     const overCol  = e.target.closest('.column');
+    const cols     = activeBoard().columns;
 
     if (drag.type === 'card') {
       let movedCard = null;
-      for (const col of state.columns) {
+      for (const col of cols) {
         const i = col.cards.findIndex(c => c.id === drag.cardId);
         if (i !== -1) { [movedCard] = col.cards.splice(i, 1); break; }
       }
       if (!movedCard) return;
       if (overCard && overCard.dataset.cardId !== drag.cardId) {
-        const targetCol = state.columns.find(c => c.id === overCard.dataset.colId);
+        const targetCol = cols.find(c => c.id === overCard.dataset.colId);
         if (targetCol) {
           const i = targetCol.cards.findIndex(c => c.id === overCard.dataset.cardId);
           targetCol.cards.splice(i, 0, movedCard);
         } else {
-          state.columns[0]?.cards.push(movedCard);
+          cols[0]?.cards.push(movedCard);
         }
       } else if (overCol) {
-        const targetCol = state.columns.find(c => c.id === overCol.dataset.colId);
+        const targetCol = cols.find(c => c.id === overCol.dataset.colId);
         if (targetCol) targetCol.cards.push(movedCard);
-        else state.columns.find(c => c.id === drag.srcColId)?.cards.push(movedCard);
+        else cols.find(c => c.id === drag.srcColId)?.cards.push(movedCard);
       } else {
-        state.columns.find(c => c.id === drag.srcColId)?.cards.push(movedCard);
+        cols.find(c => c.id === drag.srcColId)?.cards.push(movedCard);
       }
     } else if (drag.type === 'column') {
       if (overCol && overCol.dataset.colId !== drag.colId) {
-        const srcI = state.columns.findIndex(c => c.id === drag.colId);
-        const [movedCol] = state.columns.splice(srcI, 1);
-        let dstI = state.columns.findIndex(c => c.id === overCol.dataset.colId);
+        const srcI = cols.findIndex(c => c.id === drag.colId);
+        const [movedCol] = cols.splice(srcI, 1);
+        let dstI = cols.findIndex(c => c.id === overCol.dataset.colId);
         const rect = overCol.getBoundingClientRect();
         if (e.clientX > rect.left + rect.width / 2) dstI += 1;
-        state.columns.splice(dstI, 0, movedCol);
+        cols.splice(dstI, 0, movedCol);
       }
     }
     drag = null;
@@ -434,10 +533,10 @@ function setupDragDrop(board) {
 // ─── Templates ────────────────────────────────────────────────────────────────
 
 function renderCard(card, colId) {
-  const elapsed    = getElapsed(card);
-  const running    = !!startedAt[card.id];
-  const tags       = card.tags || [];
-  const hasTitle   = (card.title || '').trim().length > 0;
+  const elapsed  = getElapsed(card);
+  const running  = !!startedAt[card.id];
+  const tags     = card.tags || [];
+  const hasTitle = (card.title || '').trim().length > 0;
 
   const activeTags = tags.map(t =>
     `<span class="tag-mini tag-${t}">${t}</span>`
@@ -490,7 +589,7 @@ function renderColumn(col) {
 }
 
 function renderArchivedSection() {
-  const archived = state.columns.filter(c => c.archived);
+  const archived = activeBoard().columns.filter(c => c.archived);
   if (archived.length === 0) return '';
 
   const items = archived.map(col => {
@@ -513,6 +612,35 @@ function renderArchivedSection() {
 </div>`;
 }
 
+// ─── Sidebar render ───────────────────────────────────────────────────────────
+
+function renderSidebar() {
+  const sidebar = document.getElementById('boards-sidebar');
+  if (!sidebar) return;
+
+  const items = boards.map(board => {
+    const total    = boardTotal(board);
+    const isActive = board.id === activeBoardId;
+    return `
+<div class="board-item${isActive ? ' active' : ''}" data-action="switch-board" data-board-id="${board.id}">
+  <input class="board-name-input"
+         data-input="board-title" data-board-id="${board.id}"
+         value="${escAttr(board.title)}" />
+  <span class="board-total-badge" data-board-total="${board.id}">${fmt(total)}</span>
+  ${boards.length > 1
+    ? `<button class="btn-board-delete btn-icon" data-action="delete-board" data-board-id="${board.id}" title="Eliminar tablón">✕</button>`
+    : ''}
+</div>`;
+  }).join('');
+
+  sidebar.innerHTML = `
+<div class="sidebar-header">
+  <span class="sidebar-title">Tablones</span>
+  <button class="btn-add-board" data-action="add-board" title="Nuevo tablón">+</button>
+</div>
+<div class="boards-list">${items}</div>`;
+}
+
 // ─── Render ───────────────────────────────────────────────────────────────────
 
 function render() {
@@ -524,11 +652,11 @@ function render() {
   const selEnd       = active?.selectionEnd;
   const scrollTop    = active?.scrollTop;
 
-  const board = document.getElementById('board');
-  const active_cols = state.columns.filter(c => !c.archived);
+  const board      = document.getElementById('board');
+  const activeCols = activeBoard().columns.filter(c => !c.archived);
 
   board.innerHTML =
-    active_cols.map(renderColumn).join('') +
+    activeCols.map(renderColumn).join('') +
     `<div class="add-col-btn"><button data-action="add-column">+ Añadir Columna</button></div>` +
     renderArchivedSection();
 
@@ -567,6 +695,26 @@ function init() {
   document.getElementById('theme-toggle')
     .addEventListener('click', toggleTheme);
 
+  // ── Mobile sidebar toggle ─────────────────────────────────
+  const sidebarToggleBtn = document.getElementById('sidebar-toggle');
+  const sidebarOverlay   = document.getElementById('sidebar-overlay');
+
+  function openSidebar() {
+    sidebar.classList.add('open');
+    sidebarOverlay.classList.add('open');
+    sidebarToggleBtn.classList.add('active');
+  }
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    sidebarOverlay.classList.remove('open');
+    sidebarToggleBtn.classList.remove('active');
+  }
+
+  sidebarToggleBtn.addEventListener('click', () => {
+    sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+  });
+  sidebarOverlay.addEventListener('click', closeSidebar);
+
   // ── Tag filters ───────────────────────────────────────────
   document.getElementById('tag-filters').addEventListener('click', e => {
     const btn = e.target.closest('.tag-filter-btn');
@@ -577,19 +725,41 @@ function init() {
     applyFilters();
   });
 
+  // ── Sidebar events ────────────────────────────────────────
+  const sidebar = document.getElementById('boards-sidebar');
+
+  sidebar.addEventListener('click', e => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const { action, boardId } = btn.dataset;
+    switch (action) {
+      case 'add-board':    addBoard();           break;
+      case 'delete-board': deleteBoard(boardId); break;
+      case 'switch-board': switchBoard(boardId); closeSidebar(); break;
+    }
+  });
+
+  sidebar.addEventListener('input', e => {
+    const { input, boardId } = e.target.dataset;
+    if (input === 'board-title') updateBoardTitle(boardId, e.target.value);
+  });
+
+  sidebar.addEventListener('focus', e => {
+    if (e.target.matches('.board-name-input')) e.target.select();
+  }, true);
+
   // ── Board events ──────────────────────────────────────────
   const board = document.getElementById('board');
 
   board.addEventListener('click', e => {
     const btn  = e.target.closest('[data-action]');
     const card = e.target.closest('.card');
-    // Click en la tarjeta (fuera de botones de acción) → abrir modal
     if (card && !btn) {
       openCardModal(card.dataset.cardId);
       return;
     }
     if (!btn) return;
-    const { action, colId, cardId, tag } = btn.dataset;
+    const { action, colId, cardId } = btn.dataset;
     switch (action) {
       case 'add-column':           addColumn();                    break;
       case 'archive-col':          archiveColumn(colId);           break;
@@ -612,9 +782,7 @@ function init() {
   });
 
   board.addEventListener('focus', e => {
-    if (e.target.matches('.col-title-input')) {
-      e.target.select();
-    }
+    if (e.target.matches('.col-title-input')) e.target.select();
   }, true);
 
   // ── Modal events ──────────────────────────────────────────
@@ -658,10 +826,10 @@ function init() {
     deleteCard(cardId);
   });
 
-
   window.addEventListener('beforeunload', save);
 
   setupDragDrop(board);
+  renderSidebar();
   render();
   ensureTick();
 }
