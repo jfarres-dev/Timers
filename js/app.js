@@ -49,7 +49,9 @@ function colTotal(col) {
 }
 
 function boardTotal(board) {
-  return board.columns.reduce((sum, col) => sum + colTotal(col), 0);
+  return board.columns
+    .filter(col => !col.archived)
+    .reduce((sum, col) => sum + colTotal(col), 0);
 }
 
 function escHtml(s) {
