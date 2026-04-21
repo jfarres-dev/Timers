@@ -626,6 +626,30 @@ body {
 
 .card-notes::placeholder { color: var(--muted); }
 
+/* ─── Static card ────────────────────────────────────────────────────────── */
+.card-static { border-left-color: var(--yellow); }
+
+.static-badge {
+  font-size: .68rem;
+  font-weight: 700;
+  color: var(--yellow);
+  background: rgba(251,191,36,.12);
+  border: 1px solid rgba(251,191,36,.25);
+  border-radius: 10px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.btn-add-static {
+  color: var(--yellow) !important;
+  border-color: rgba(251,191,36,.3) !important;
+}
+.btn-add-static:hover {
+  background: rgba(251,191,36,.07) !important;
+  border-color: var(--yellow) !important;
+}
+
 /* ─── Add timer button ───────────────────────────────────────────────────── */
 .btn-add-card {
   margin: 0 8px 8px;
@@ -976,6 +1000,67 @@ body {
   transition: background .12s;
 }
 .modal-btn-delete:hover { background: rgba(248,113,113,.28); }
+
+/* ─── Modal time editor ──────────────────────────────────────────────────── */
+.modal-time-editor {
+  display: none;
+  flex-direction: column;
+  gap: .35rem;
+}
+.modal-time-editor:not([hidden]) {
+  display: flex;
+}
+
+.modal-time-label {
+  font-size: .72rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+
+.modal-time-inputs {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+
+.modal-time-inputs span {
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 600;
+}
+
+.modal-time-h,
+.modal-time-m,
+.modal-time-s {
+  width: 60px;
+  background: rgba(0,0,0,.2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: 'Courier New', monospace;
+  font-size: .95rem;
+  font-weight: 700;
+  padding: .3rem .4rem;
+  text-align: center;
+  outline: none;
+  transition: border-color .12s;
+  -moz-appearance: textfield;
+}
+.modal-time-h::-webkit-inner-spin-button,
+.modal-time-h::-webkit-outer-spin-button,
+.modal-time-m::-webkit-inner-spin-button,
+.modal-time-m::-webkit-outer-spin-button,
+.modal-time-s::-webkit-inner-spin-button,
+.modal-time-s::-webkit-outer-spin-button { -webkit-appearance: none; }
+.modal-time-h:focus,
+.modal-time-m:focus,
+.modal-time-s:focus { border-color: var(--yellow); }
+
+[data-theme="light"] .modal-time-h,
+[data-theme="light"] .modal-time-m,
+[data-theme="light"] .modal-time-s { background: rgba(0,0,0,.04); }
 
 [data-theme="light"] .modal-box         { box-shadow: 0 8px 32px rgba(0,0,0,.15); }
 [data-theme="light"] .modal-notes       { background: rgba(0,0,0,.04); }

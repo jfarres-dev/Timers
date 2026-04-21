@@ -116,6 +116,7 @@ function normalizeBoard(board) {
       if (card.running)              startedAt[card.id] = Date.now();
       if (card.collapsed == null)    card.collapsed = true;
       if (!Array.isArray(card.tags)) card.tags = [];
+      if (card.type == null)         card.type = 'timer';
     });
   });
 }
@@ -328,11 +329,25 @@ function addCard(colId) {
   const card = {
     id: uid(), title: '',
     elapsed: 0, running: false,
-    notes: '', tags: [],
+    notes: '', tags: [], type: 'timer',
   };
   col.cards.push(card);
   save();
   render();
+}
+
+function addStaticCard(colId) {
+  const col = activeBoard().columns.find(c => c.id === colId);
+  if (!col) return;
+  const card = {
+    id: uid(), title: '',
+    elapsed: 0, running: false,
+    notes: '', tags: [], type: 'static',
+  };
+  col.cards.push(card);
+  save();
+  render();
+  openCardModal(card.id);
 }
 
 function deleteCard(cardId) {
@@ -374,6 +389,18 @@ function openCardModal(cardId) {
   modal.dataset.cardId = cardId;
   modal.querySelector('.modal-title-input').value = card.title;
   modal.querySelector('.modal-notes').value = card.notes || '';
+
+  const timeEditor = modal.querySelector('.modal-time-editor');
+  if (card.type === 'static') {
+    const totalSec = Math.floor(card.elapsed);
+    modal.querySelector('.modal-time-h').value = Math.floor(totalSec / 3600);
+    modal.querySelector('.modal-time-m').value = Math.floor((totalSec % 3600) / 60);
+    modal.querySelector('.modal-time-s').value = totalSec % 60;
+    timeEditor.hidden = false;
+  } else {
+    timeEditor.hidden = true;
+  }
+
   renderModalTags(modal);
   modal.classList.add('open');
   const titleInput = modal.querySelector('.modal-title-input');
@@ -539,22 +566,27 @@ function renderCard(card, colId) {
   const running  = !!startedAt[card.id];
   const tags     = card.tags || [];
   const hasTitle = (card.title || '').trim().length > 0;
+  const isStatic = card.type === 'static';
 
   const activeTags = tags.map(t =>
     `<span class="tag-mini tag-${t}">${t}</span>`
   ).join('');
 
+  const controls = isStatic
+    ? `<span class="static-badge">📌 fijo</span>`
+    : `${running
+        ? `<button class="btn-timer btn-stop"  data-action="stop"  data-card-id="${card.id}">⏹</button>`
+        : `<button class="btn-timer btn-start" data-action="start" data-card-id="${card.id}">▶</button>`
+      }
+      <button class="btn-timer btn-reset" data-action="reset" data-card-id="${card.id}"${running ? ' disabled' : ''}>↺</button>`;
+
   return `
-<div class="card${running ? ' running' : ''}" draggable="true"
+<div class="card${running ? ' running' : ''}${isStatic ? ' card-static' : ''}" draggable="true"
      data-card-id="${card.id}" data-col-id="${colId}">
   <div class="timer-row">
     <span class="timer-display" data-card-timer="${card.id}">${fmt(elapsed)}</span>
     <div class="timer-controls">
-      ${running
-        ? `<button class="btn-timer btn-stop"  data-action="stop"  data-card-id="${card.id}">⏹</button>`
-        : `<button class="btn-timer btn-start" data-action="start" data-card-id="${card.id}">▶</button>`
-      }
-      <button class="btn-timer btn-reset" data-action="reset" data-card-id="${card.id}"${running ? ' disabled' : ''}>↺</button>
+      ${controls}
     </div>
   </div>
   ${hasTitle ? `<div class="card-title-label">${escHtml(card.title)}</div>` : ''}
@@ -587,6 +619,7 @@ function renderColumn(col) {
     ${col.cards.map(c => renderCard(c, col.id)).join('')}
   </div>
   <button class="btn-add-card" data-action="add-card" data-col-id="${col.id}">+ Añadir Timer</button>
+  <button class="btn-add-card btn-add-static" data-action="add-static-card" data-col-id="${col.id}">+ Tiempo Fijo</button>
 </div>`;
 }
 
@@ -772,6 +805,7 @@ function init() {
         render();
         break;
       case 'add-card':             addCard(colId);                 break;
+      case 'add-static-card':      addStaticCard(colId);           break;
       case 'start':                startTimer(cardId);             break;
       case 'stop':                 stopTimer(cardId);              break;
       case 'reset':                resetTimer(cardId);             break;
@@ -806,7 +840,17 @@ function init() {
     updateCardTitle(cardId, modal.querySelector('.modal-title-input').value);
     updateNotes(cardId, modal.querySelector('.modal-notes').value);
     const found = findCard(cardId);
-    if (found) { found.card.tags = [...modalTags]; save(); render(); }
+    if (found) {
+      found.card.tags = [...modalTags];
+      if (found.card.type === 'static') {
+        const h = parseInt(modal.querySelector('.modal-time-h').value, 10) || 0;
+        const m = parseInt(modal.querySelector('.modal-time-m').value, 10) || 0;
+        const s = parseInt(modal.querySelector('.modal-time-s').value, 10) || 0;
+        found.card.elapsed = h * 3600 + m * 60 + s;
+      }
+      save();
+      render();
+    }
     closeCardModal();
   });
 

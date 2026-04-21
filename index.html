@@ -44,6 +44,17 @@
         <button class="modal-close" title="Cerrar">✕</button>
       </div>
       <div class="modal-tag-picker"></div>
+      <div class="modal-time-editor" id="modal-time-editor" hidden>
+        <span class="modal-time-label">Tiempo registrado</span>
+        <div class="modal-time-inputs">
+          <input type="number" class="modal-time-h" min="0" max="9999" placeholder="0" />
+          <span>h</span>
+          <input type="number" class="modal-time-m" min="0" max="59" placeholder="0" />
+          <span>m</span>
+          <input type="number" class="modal-time-s" min="0" max="59" placeholder="0" />
+          <span>s</span>
+        </div>
+      </div>
       <textarea class="modal-notes" placeholder="Notas..."></textarea>
       <div class="modal-footer">
         <button class="modal-btn-delete">Eliminar timer</button>
