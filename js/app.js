@@ -16,6 +16,7 @@ const TAGS = [
 let boards = [];        // [{ id, title, columns[] }]
 let activeBoardId = ''; // id of the currently visible board
 const startedAt = {};   // cardId → timestamp (ms)
+const lastAccrual = {}; // cardId → timestamp up to which daily time was attributed
 
 // UI-only (not persisted)
 let filterTag = '';
@@ -68,6 +69,43 @@ function escAttr(s) {
     .replace(/</g, '&lt;');
 }
 
+// ─── Daily time attribution ─────────────────────────────────────────────────
+
+function dayKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Add the [fromTs, toTs) wall-clock interval to a card's per-day buckets,
+// splitting across midnight so each day gets its real share.
+function accrueDaily(card, fromTs, toTs) {
+  if (!card.daily) card.daily = {};
+  let cursor = fromTs;
+  while (cursor < toTs) {
+    const d = new Date(cursor);
+    const endOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+    const segEnd = Math.min(endOfDay, toTs);
+    const key = dayKey(cursor);
+    card.daily[key] = (card.daily[key] || 0) + (segEnd - cursor) / 1000;
+    cursor = segEnd;
+  }
+}
+
+// Attribute elapsed time for every running timer up to "now".
+function flushAccruals() {
+  const now = Date.now();
+  for (const board of boards) {
+    for (const col of board.columns) {
+      for (const card of col.cards) {
+        if (startedAt[card.id]) {
+          accrueDaily(card, lastAccrual[card.id] ?? startedAt[card.id], now);
+          lastAccrual[card.id] = now;
+        }
+      }
+    }
+  }
+}
+
 // ─── Theme ────────────────────────────────────────────────────────────────────
 
 function loadTheme() {
@@ -113,10 +151,11 @@ function normalizeBoard(board) {
   board.columns.forEach(col => {
     if (col.archived == null) col.archived = false;
     col.cards.forEach(card => {
-      if (card.running)              startedAt[card.id] = Date.now();
+      if (card.running)              { startedAt[card.id] = Date.now(); lastAccrual[card.id] = Date.now(); }
       if (card.collapsed == null)    card.collapsed = true;
       if (!Array.isArray(card.tags)) card.tags = [];
       if (card.type == null)         card.type = 'timer';
+      if (card.daily == null)        card.daily = {};
     });
   });
 }
@@ -169,6 +208,7 @@ function tick() {
     tickId = null;
     return;
   }
+  flushAccruals();
   // Update active board's card timers and column totals in the DOM
   for (const col of activeBoard().columns) {
     let total = 0;
@@ -208,7 +248,8 @@ function findCard(cardId) {
 
 function startTimer(cardId) {
   if (startedAt[cardId]) return;
-  startedAt[cardId] = Date.now();
+  startedAt[cardId]   = Date.now();
+  lastAccrual[cardId] = Date.now();
   ensureTick();
   save();
   render();
@@ -218,8 +259,12 @@ function stopTimer(cardId) {
   if (!startedAt[cardId]) return;
   const found = findCard(cardId);
   const delta = (Date.now() - startedAt[cardId]) / 1000;
-  if (found) found.card.elapsed += delta;
+  if (found) {
+    accrueDaily(found.card, lastAccrual[cardId] ?? startedAt[cardId], Date.now());
+    found.card.elapsed += delta;
+  }
   delete startedAt[cardId];
+  delete lastAccrual[cardId];
   save();
   render();
 }
@@ -228,7 +273,9 @@ function resetTimer(cardId) {
   const found = findCard(cardId);
   if (!found) return;
   delete startedAt[cardId];
+  delete lastAccrual[cardId];
   found.card.elapsed = 0;
+  found.card.daily   = {};
   save();
   render();
 }
@@ -336,20 +383,6 @@ function addCard(colId) {
   render();
 }
 
-function addStaticCard(colId) {
-  const col = activeBoard().columns.find(c => c.id === colId);
-  if (!col) return;
-  const card = {
-    id: uid(), title: '',
-    elapsed: 0, running: false,
-    notes: '', tags: [], type: 'static',
-  };
-  col.cards.push(card);
-  save();
-  render();
-  openCardModal(card.id);
-}
-
 function deleteCard(cardId) {
   delete startedAt[cardId];
   for (const col of activeBoard().columns) {
@@ -390,16 +423,17 @@ function openCardModal(cardId) {
   modal.querySelector('.modal-title-input').value = card.title;
   modal.querySelector('.modal-notes').value = card.notes || '';
 
+  const isStatic   = card.type === 'static';
   const timeEditor = modal.querySelector('.modal-time-editor');
-  if (card.type === 'static') {
-    const totalSec = Math.floor(card.elapsed);
-    modal.querySelector('.modal-time-h').value = Math.floor(totalSec / 3600);
-    modal.querySelector('.modal-time-m').value = Math.floor((totalSec % 3600) / 60);
-    modal.querySelector('.modal-time-s').value = totalSec % 60;
-    timeEditor.hidden = false;
-  } else {
-    timeEditor.hidden = true;
-  }
+  const typeToggle = modal.querySelector('.modal-type-checkbox');
+
+  const totalSec = Math.floor(getElapsed(card));
+  modal.querySelector('.modal-time-h').value = Math.floor(totalSec / 3600);
+  modal.querySelector('.modal-time-m').value = Math.floor((totalSec % 3600) / 60);
+  modal.querySelector('.modal-time-s').value = totalSec % 60;
+
+  typeToggle.checked = isStatic;
+  timeEditor.hidden  = !isStatic;
 
   renderModalTags(modal);
   modal.classList.add('open');
@@ -440,6 +474,182 @@ function toggleTag(cardId, tag) {
   found.card.tags = tags;
   save();
   render();
+}
+
+// ─── Report ───────────────────────────────────────────────────────────────────
+
+function reportData() {
+  const board = activeBoard();
+  const cols  = board.columns.filter(c => !c.archived);
+  let total = 0;
+  const columns = cols.map(col => {
+    const colSec = colTotal(col);
+    total += colSec;
+    return {
+      title: col.title,
+      seconds: colSec,
+      cards: col.cards.map(card => ({
+        title: (card.title || '').trim() || '(sin nombre)',
+        seconds: getElapsed(card),
+        static: card.type === 'static',
+      })),
+    };
+  });
+  return { boardTitle: board.title, columns, total };
+}
+
+function reportText() {
+  const { boardTitle, columns, total } = reportData();
+  const lines = [`Informe — ${boardTitle}`, ''];
+  for (const col of columns) {
+    lines.push(`${col.title}: ${fmt(col.seconds)}`);
+    if (col.cards.length === 0) lines.push('  (sin timers)');
+    for (const card of col.cards) {
+      lines.push(`  - ${card.static ? '📌 ' : ''}${card.title}: ${fmt(card.seconds)}`);
+    }
+    lines.push('');
+  }
+  lines.push(`Total: ${fmt(total)}`);
+  return lines.join('\n');
+}
+
+function openReportModal() {
+  const { boardTitle, columns, total } = reportData();
+  const modal = document.getElementById('report-modal');
+  modal.querySelector('.report-title').textContent = `Informe — ${boardTitle}`;
+
+  const body = columns.length === 0
+    ? `<p class="report-none">No hay columnas activas en este tablón.</p>`
+    : columns.map(col => {
+        const rows = col.cards.length === 0
+          ? `<div class="report-row report-empty"><span>Sin timers</span><span></span></div>`
+          : col.cards.map(card => `
+            <div class="report-row">
+              <span class="report-name">${card.static ? '📌 ' : ''}${escHtml(card.title)}</span>
+              <span class="report-time">${fmt(card.seconds)}</span>
+            </div>`).join('');
+        return `
+          <div class="report-col">
+            <div class="report-col-head">
+              <span>${escHtml(col.title)}</span>
+              <span>${fmt(col.seconds)}</span>
+            </div>
+            ${rows}
+          </div>`;
+      }).join('');
+
+  modal.querySelector('.report-body').innerHTML =
+    body + `<div class="report-total"><span>Total</span><span>${fmt(total)}</span></div>`;
+  modal.classList.add('open');
+}
+
+function closeReportModal() {
+  document.getElementById('report-modal').classList.remove('open');
+}
+
+function copyReport(btn) {
+  navigator.clipboard.writeText(reportText()).then(() => {
+    const prev = btn.textContent;
+    btn.textContent = '✓ Copiado';
+    setTimeout(() => { btn.textContent = prev; }, 1500);
+  }).catch(() => {
+    btn.textContent = 'Error al copiar';
+  });
+}
+
+// ─── Daily report (per-day breakdown) ────────────────────────────────────────
+
+function fmtDay(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  const label = new Date(y, m - 1, d).toLocaleDateString('es-ES', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function dailyReportData() {
+  flushAccruals(); // make sure running timers count up to now
+  const board = activeBoard();
+  const cols  = board.columns.filter(c => !c.archived);
+  const days  = {}; // dayKey → { total, items: [{ name, col, seconds }] }
+  let total = 0;
+
+  for (const col of cols) {
+    for (const card of col.cards) {
+      const name = (card.title || '').trim() || '(sin nombre)';
+      for (const [day, sec] of Object.entries(card.daily || {})) {
+        if (sec <= 0) continue;
+        (days[day] ??= { total: 0, items: [] });
+        days[day].total += sec;
+        days[day].items.push({ name, col: col.title, seconds: sec });
+        total += sec;
+      }
+    }
+  }
+
+  const sorted = Object.keys(days).sort().reverse().map(key => ({
+    key,
+    label: fmtDay(key),
+    total: days[key].total,
+    items: days[key].items.sort((a, b) => b.seconds - a.seconds),
+  }));
+  return { boardTitle: board.title, days: sorted, total };
+}
+
+function dailyReportText() {
+  const { boardTitle, days, total } = dailyReportData();
+  const lines = [`Informe por días — ${boardTitle}`, ''];
+  for (const day of days) {
+    lines.push(`${day.label}: ${fmt(day.total)}`);
+    for (const it of day.items) {
+      lines.push(`  - ${it.name} (${it.col}): ${fmt(it.seconds)}`);
+    }
+    lines.push('');
+  }
+  lines.push(`Total: ${fmt(total)}`);
+  return lines.join('\n');
+}
+
+function openDailyReportModal() {
+  const { boardTitle, days, total } = dailyReportData();
+  const modal = document.getElementById('daily-report-modal');
+  modal.querySelector('.report-title').textContent = `Por días — ${boardTitle}`;
+
+  const body = days.length === 0
+    ? `<p class="report-none">Aún no hay tiempo registrado por días.</p>`
+    : days.map(day => {
+        const rows = day.items.map(it => `
+          <div class="report-row">
+            <span class="report-name">${escHtml(it.name)} <span class="report-col-tag">${escHtml(it.col)}</span></span>
+            <span class="report-time">${fmt(it.seconds)}</span>
+          </div>`).join('');
+        return `
+          <div class="report-col">
+            <div class="report-col-head">
+              <span>${escHtml(day.label)}</span>
+              <span>${fmt(day.total)}</span>
+            </div>
+            ${rows}
+          </div>`;
+      }).join('');
+
+  modal.querySelector('.report-body').innerHTML =
+    body + `<div class="report-total"><span>Total</span><span>${fmt(total)}</span></div>`;
+  modal.classList.add('open');
+}
+
+function closeDailyReportModal() {
+  document.getElementById('daily-report-modal').classList.remove('open');
+}
+
+function copyDailyReport(btn) {
+  navigator.clipboard.writeText(dailyReportText()).then(() => {
+    const prev = btn.textContent;
+    btn.textContent = '✓ Copiado';
+    setTimeout(() => { btn.textContent = prev; }, 1500);
+  }).catch(() => {
+    btn.textContent = 'Error al copiar';
+  });
 }
 
 // ─── Filters ──────────────────────────────────────────────────────────────────
@@ -619,7 +829,6 @@ function renderColumn(col) {
     ${col.cards.map(c => renderCard(c, col.id)).join('')}
   </div>
   <button class="btn-add-card" data-action="add-card" data-col-id="${col.id}">+ Añadir Timer</button>
-  <button class="btn-add-card btn-add-static" data-action="add-static-card" data-col-id="${col.id}">+ Tiempo Fijo</button>
 </div>`;
 }
 
@@ -730,6 +939,31 @@ function init() {
   document.getElementById('theme-toggle')
     .addEventListener('click', toggleTheme);
 
+  // ── Report modal ──────────────────────────────────────────
+  document.getElementById('report-btn')
+    .addEventListener('click', openReportModal);
+
+  const reportModal = document.getElementById('report-modal');
+  reportModal.addEventListener('click', e => {
+    if (e.target === reportModal || e.target.closest('.report-close')) {
+      closeReportModal();
+    } else if (e.target.closest('.report-copy')) {
+      copyReport(e.target.closest('.report-copy'));
+    }
+  });
+
+  document.getElementById('daily-report-btn')
+    .addEventListener('click', openDailyReportModal);
+
+  const dailyModal = document.getElementById('daily-report-modal');
+  dailyModal.addEventListener('click', e => {
+    if (e.target === dailyModal || e.target.closest('.daily-report-close')) {
+      closeDailyReportModal();
+    } else if (e.target.closest('.daily-report-copy')) {
+      copyDailyReport(e.target.closest('.daily-report-copy'));
+    }
+  });
+
   // ── Mobile sidebar toggle ─────────────────────────────────
   const sidebarToggleBtn = document.getElementById('sidebar-toggle');
   const sidebarOverlay   = document.getElementById('sidebar-overlay');
@@ -805,7 +1039,6 @@ function init() {
         render();
         break;
       case 'add-card':             addCard(colId);                 break;
-      case 'add-static-card':      addStaticCard(colId);           break;
       case 'start':                startTimer(cardId);             break;
       case 'stop':                 stopTimer(cardId);              break;
       case 'reset':                resetTimer(cardId);             break;
@@ -829,10 +1062,15 @@ function init() {
   });
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') closeCardModal();
+    if (e.key === 'Escape') { closeCardModal(); closeReportModal(); closeDailyReportModal(); }
   });
 
   modal.querySelector('.modal-close').addEventListener('click', closeCardModal);
+
+  // Toggle "Tiempo fijo": show/hide the manual time editor
+  modal.querySelector('.modal-type-checkbox').addEventListener('change', e => {
+    modal.querySelector('.modal-time-editor').hidden = !e.target.checked;
+  });
 
   modal.querySelector('.modal-btn-save').addEventListener('click', () => {
     const cardId = modal.dataset.cardId;
@@ -842,11 +1080,22 @@ function init() {
     const found = findCard(cardId);
     if (found) {
       found.card.tags = [...modalTags];
-      if (found.card.type === 'static') {
+      const wantStatic = modal.querySelector('.modal-type-checkbox').checked;
+      if (wantStatic) {
+        // Switching to / staying as fixed time: stop any running timer
+        // and use the manually entered value.
+        delete startedAt[cardId];
+        delete lastAccrual[cardId];
         const h = parseInt(modal.querySelector('.modal-time-h').value, 10) || 0;
         const m = parseInt(modal.querySelector('.modal-time-m').value, 10) || 0;
         const s = parseInt(modal.querySelector('.modal-time-s').value, 10) || 0;
         found.card.elapsed = h * 3600 + m * 60 + s;
+        found.card.type = 'static';
+        // A manual value has no real timeline; attribute it to today so the
+        // per-day report stays consistent with the totals report.
+        found.card.daily = { [dayKey(Date.now())]: found.card.elapsed };
+      } else {
+        found.card.type = 'timer';
       }
       save();
       render();
@@ -872,7 +1121,7 @@ function init() {
     deleteCard(cardId);
   });
 
-  window.addEventListener('beforeunload', save);
+  window.addEventListener('beforeunload', () => { flushAccruals(); save(); });
 
   setupDragDrop(board);
   renderSidebar();

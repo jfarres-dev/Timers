@@ -641,15 +641,6 @@ body {
   cursor: default;
 }
 
-.btn-add-static {
-  color: var(--yellow) !important;
-  border-color: rgba(251,191,36,.3) !important;
-}
-.btn-add-static:hover {
-  background: rgba(251,191,36,.07) !important;
-  border-color: var(--yellow) !important;
-}
-
 /* ─── Add timer button ───────────────────────────────────────────────────── */
 .btn-add-card {
   margin: 0 8px 8px;
@@ -1001,6 +992,23 @@ body {
 }
 .modal-btn-delete:hover { background: rgba(248,113,113,.28); }
 
+/* ─── Modal type toggle (fixed time) ─────────────────────────────────────── */
+.modal-type-toggle {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  font-size: .82rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.modal-type-toggle input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--yellow);
+  cursor: pointer;
+}
+
 /* ─── Modal time editor ──────────────────────────────────────────────────── */
 .modal-time-editor {
   display: none;
@@ -1070,6 +1078,90 @@ body {
 [data-theme="light"] .board-item.active { background: rgba(29,106,229,.08); border-color: rgba(29,106,229,.2); }
 [data-theme="light"] .board-item.active .board-name-input:focus { background: rgba(0,0,0,.05); }
 [data-theme="light"] .board-item.active .board-total-badge { background: rgba(29,106,229,.1); }
+
+/* ─── Report modal ───────────────────────────────────────────────────────── */
+.report-box { width: min(520px, 92vw); }
+
+.report-title {
+  flex: 1;
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-body {
+  display: flex;
+  flex-direction: column;
+  gap: .85rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.report-col {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.report-col-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .5rem;
+  padding: .4rem .6rem;
+  background: rgba(127,127,127,.08);
+  font-weight: 700;
+  font-size: .85rem;
+  color: var(--text);
+}
+.report-col-head span:last-child {
+  font-family: 'Courier New', monospace;
+  color: var(--accent);
+}
+
+.report-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .5rem;
+  padding: .32rem .6rem;
+  font-size: .82rem;
+  border-top: 1px solid var(--border);
+}
+.report-name { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.report-time { font-family: 'Courier New', monospace; color: var(--muted); flex-shrink: 0; }
+.report-empty { color: var(--muted); font-style: italic; }
+
+.report-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: .5rem .6rem;
+  border-top: 2px solid var(--border);
+  font-weight: 800;
+  font-size: .95rem;
+  color: var(--text);
+}
+.report-total span:last-child {
+  font-family: 'Courier New', monospace;
+  color: var(--accent);
+}
+
+.report-none { color: var(--muted); text-align: center; padding: 1rem 0; }
+
+.report-col-tag {
+  font-size: .72rem;
+  color: var(--muted);
+  background: rgba(127,127,127,.12);
+  border-radius: 8px;
+  padding: 1px 6px;
+  margin-left: .25rem;
+}
 
 /* ─── Tablet ──────────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
